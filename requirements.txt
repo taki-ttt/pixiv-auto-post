@@ -1,0 +1,4 @@
+pixivpy3>=3.7.5
+google-api-python-client>=2.100.0
+google-auth>=2.22.0
+requests>=2.31.0

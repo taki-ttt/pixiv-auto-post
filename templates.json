@@ -1,0 +1,19 @@
+{
+  "_comment": "metadata.csv で空欄の項目にこの値が適用されます。recommended_tags は analyze_weekly.py が自動更新します。",
+
+  "title": "AI生成アニメイラスト",
+  "tags": [
+    "AIイラスト",
+    "アニメ",
+    "オリジナル",
+    "StableDiffusion",
+    "AI生成"
+  ],
+  "caption": "Stable Diffusionで生成したアニメイラストです。\n#AIイラスト #StableDiffusion",
+
+  "x_restrict": 0,
+  "ai_type": 2,
+  "restrict": 0,
+
+  "recommended_tags": []
+}

@@ -1,0 +1,23 @@
+{
+  "_comment": "投稿時刻はすべて JST (日本時間) で記載。daily_post_limit を 11 以上にする場合は取扱説明書の注意事項を必ず確認してください。",
+
+  "post_schedule_jst": [
+    "09:00",
+    "11:00",
+    "12:00",
+    "13:00",
+    "15:00",
+    "17:00",
+    "19:00",
+    "20:00",
+    "21:00",
+    "22:00"
+  ],
+
+  "daily_post_limit": 10,
+  "post_tolerance_minutes": 14,
+
+  "stats_collect_hours_after": 48,
+
+  "dry_run": false
+}

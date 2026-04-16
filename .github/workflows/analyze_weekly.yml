@@ -1,0 +1,45 @@
+name: Weekly Analysis Report
+
+on:
+  schedule:
+    # 毎週月曜 JST 00:00 (UTC 日曜 15:00) に実行
+    - cron: "0 15 * * 0"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run analyze_weekly.py
+        run: python analyze_weekly.py
+
+      - name: Commit report and templates.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/ templates.json
+          if git diff --staged --quiet; then
+            echo "変更なし。コミットをスキップします。"
+          else
+            git commit -m "auto: weekly analysis report [skip ci]"
+            git push
+          fi

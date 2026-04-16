@@ -1,0 +1,73 @@
+name: Pixiv Auto Post
+
+on:
+  schedule:
+    # 30 分おきに起動。実際の投稿時刻は config.json の post_schedule_jst で制御。
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "DRY RUN (実際には投稿しない)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+permissions:
+  contents: write   # metadata.csv をコミットするために必要
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # ① リポジトリをチェックアウト
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ② Python セットアップ
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ③ 依存ライブラリのインストール
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ④ DRY_RUN フラグを config.json に反映 (手動実行時のみ)
+      - name: Override dry_run if requested
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          python - <<'EOF'
+          import json, pathlib
+          cfg = json.loads(pathlib.Path("config.json").read_text())
+          cfg["dry_run"] = True
+          pathlib.Path("config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+          print("dry_run = True に設定しました")
+          EOF
+
+      # ⑤ メイン投稿スクリプトを実行
+      - name: Run post_to_pixiv.py
+        env:
+          PIXIV_REFRESH_TOKEN:   ${{ secrets.PIXIV_REFRESH_TOKEN }}
+          GOOGLE_CREDENTIALS:    ${{ secrets.GOOGLE_CREDENTIALS }}
+          PIXIV_DRIVE_FOLDER_ID: ${{ secrets.PIXIV_DRIVE_FOLDER_ID }}
+        run: python post_to_pixiv.py
+
+      # ⑥ metadata.csv の変更をコミット・プッシュ
+      - name: Commit metadata.csv
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add metadata.csv
+          if git diff --staged --quiet; then
+            echo "変更なし。コミットをスキップします。"
+          else
+            git commit -m "auto: update metadata.csv [skip ci]"
+            git push
+          fi
