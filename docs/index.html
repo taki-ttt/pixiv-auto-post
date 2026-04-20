@@ -152,7 +152,7 @@ function parseCSV(text) {
 }
 function escapeCSVField(val) { const s = String(val || ''); return (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) ? '"' + s.replace(/"/g, '""') + '"' : s; }
 function serializeCSV(rows, headers) { const h = headers || Object.keys(rows[0] || {}); return [h.join(','), ...rows.map(r => h.map(k => escapeCSVField(r[k])).join(','))].join('\n') + '\n'; }
-const META_HEADERS = ['post_id','title','tags','caption','x_restrict','ai_type','restrict','posted','posted_at','pixiv_id','image_count'];
+const META_HEADERS = ['post_id','drive_folder','title','tags','caption','x_restrict','ai_type','restrict','posted','posted_at','pixiv_id','image_count'];
 
 // ── Pixiv風タグ入力 ──
 const POPULAR_TAGS = ['AI生成','AIイラスト','AI art','オリジナル','女の子','1girl','イラスト','illustration','美少女','創作'];
@@ -407,23 +407,29 @@ function DashboardPage({ config, metadata, perfLog, driveFolders }) {
 }
 
 // ── Images Page (NEW) ──
-function ImagesPage({ drive, rootFolderId, metadata, metaSha, api, onRefresh, showToast }) {
+function ImagesPage({ drive, rootFolderId, metadata, metaSha, api, onRefresh, showToast, templates }) {
   const [folders, setFolders] = useState([]);
   const [selectedFolder, setSelectedFolder] = useState(null);
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
   const [showNewFolder, setShowNewFolder] = useState(false);
+  const [showLinkModal, setShowLinkModal] = useState(null);
   const fileInputRef = useRef(null);
+
+  // フォルダ名でmetadataを検索（post_idまたはdrive_folderで照合）
+  const findMetaRow = (folderName) => metadata.find(r => r.post_id === folderName || r.drive_folder === folderName);
+  const getNextPostId = () => {
+    const nums = metadata.map(r => { const m = r.post_id.match(/^post_(\d+)$/); return m ? parseInt(m[1]) : 0; });
+    return `post_${String(Math.max(0, ...nums) + 1).padStart(3, '0')}`;
+  };
 
   const loadFolders = useCallback(async () => {
     if (!rootFolderId) return;
     setLoading(true);
     try {
       const f = await drive.listFolders(rootFolderId);
-      // Filter out 'posted' folder
       setFolders(f.filter(x => x.name !== 'posted'));
     } catch (e) { showToast('フォルダ一覧の取得に失敗', 'error'); }
     setLoading(false);
@@ -462,23 +468,35 @@ function ImagesPage({ drive, rootFolderId, metadata, metaSha, api, onRefresh, sh
   const handleDragLeave = () => setDragActive(false);
 
   const createFolder = async () => {
-    if (!newFolderName.trim()) return;
     try {
-      await drive.createFolder(newFolderName.trim(), rootFolderId);
-      showToast(`フォルダ「${newFolderName}」を作成しました`, 'success');
-      setNewFolderName(''); setShowNewFolder(false);
-      // Also add to metadata.csv
+      const postId = getNextPostId();
+      await drive.createFolder(postId, rootFolderId);
+      // 自動投稿にも自動追加（デフォルトタグ・R-18・AI生成）
+      const defaultTags = (templates && templates.tags) ? templates.tags.join('|') : '';
       const rows = [...metadata];
-      const exists = rows.some(r => r.post_id === newFolderName.trim());
-      if (!exists) {
-        rows.push({ post_id: newFolderName.trim(), title: '', tags: '', caption: '', x_restrict: '', ai_type: '', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' });
-        const csv = serializeCSV(rows, META_HEADERS);
-        await api.putFile('metadata.csv', csv, metaSha, `dashboard: add ${newFolderName} to queue`);
-        showToast('自動投稿にも自動追加しました', 'success');
-      }
+      rows.push({ post_id: postId, drive_folder: postId, title: '', tags: defaultTags, caption: '', x_restrict: '1', ai_type: '2', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' });
+      const csv = serializeCSV(rows, META_HEADERS);
+      await api.putFile('metadata.csv', csv, metaSha, `dashboard: add ${postId}`);
+      showToast(`「${postId}」を作成し、自動投稿に登録しました`, 'success');
+      setShowNewFolder(false);
       loadFolders();
       onRefresh();
     } catch (e) { showToast('フォルダ作成に失敗: ' + e.message, 'error'); }
+  };
+
+  // 未紐付けフォルダを自動投稿に紐付け
+  const linkFolder = async (folderName) => {
+    const postId = getNextPostId();
+    const defaultTags = (templates && templates.tags) ? templates.tags.join('|') : '';
+    const rows = [...metadata];
+    rows.push({ post_id: postId, drive_folder: folderName, title: '', tags: defaultTags, caption: '', x_restrict: '1', ai_type: '2', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' });
+    const csv = serializeCSV(rows, META_HEADERS);
+    try {
+      await api.putFile('metadata.csv', csv, metaSha, `dashboard: link ${folderName} as ${postId}`);
+      showToast(`「${folderName}」を ${postId} として登録しました`, 'success');
+      setShowLinkModal(null);
+      onRefresh();
+    } catch (e) { showToast('登録に失敗: ' + e.message, 'error'); }
   };
 
   const deleteImage = async (fileId, fileName) => {
@@ -502,16 +520,18 @@ function ImagesPage({ drive, rootFolderId, metadata, metaSha, api, onRefresh, sh
         </button>
       </div>
 
-      {/* New Folder Modal */}
+      {/* New Folder Confirm */}
       {showNewFolder && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 fade-in">
           <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-2xl">
             <h3 className="font-bold text-gray-800 mb-4">新規投稿フォルダを作成</h3>
-            <p className="text-sm text-gray-500 mb-3">フォルダ名がそのまま投稿IDになります。自動投稿にも自動追加されます。</p>
-            <input type="text" value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm mb-4" placeholder="例: post_004" autoFocus />
+            <p className="text-sm text-gray-500 mb-2">Google Driveに新しいフォルダを作成し、自動投稿に登録します。</p>
+            <div className="bg-blue-50 rounded-lg p-3 mb-4">
+              <p className="text-sm text-blue-700">作成されるID: <span className="font-mono font-bold">{getNextPostId()}</span></p>
+              <p className="text-xs text-blue-500 mt-1">デフォルト: R-18 / AI生成 / テンプレートタグ適用</p>
+            </div>
             <div className="flex gap-2 justify-end">
-              <button onClick={() => { setShowNewFolder(false); setNewFolderName(''); }} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg text-sm">キャンセル</button>
+              <button onClick={() => setShowNewFolder(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg text-sm">キャンセル</button>
               <button onClick={createFolder} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm">作成</button>
             </div>
           </div>
@@ -530,17 +550,28 @@ function ImagesPage({ drive, rootFolderId, metadata, metaSha, api, onRefresh, sh
             ) : (
               <div className="space-y-1">
                 {folders.map(f => {
-                  const inQueue = metadata.some(r => r.post_id === f.name);
-                  const posted = metadata.some(r => r.post_id === f.name && r.posted === 'yes');
+                  const meta = findMetaRow(f.name);
+                  const posted = meta && meta.posted === 'yes';
+                  const registered = !!meta;
                   return (
-                    <button key={f.id} onClick={() => loadFiles(f)}
-                      className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-left text-sm transition ${selectedFolder?.id === f.id ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-gray-50 text-gray-700'}`}>
-                      {Icons.folder}
-                      <div className="flex-1 min-w-0">
-                        <p className="truncate font-medium">{f.name}</p>
-                        {posted ? <p className="text-xs text-green-500">投稿済み</p> : inQueue ? <p className="text-xs text-blue-500">キュー登録済み</p> : <p className="text-xs text-gray-400">未登録</p>}
-                      </div>
-                    </button>
+                    <div key={f.id} className="flex items-center gap-1">
+                      <button onClick={() => loadFiles(f)}
+                        className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-lg text-left text-sm transition ${selectedFolder?.id === f.id ? 'bg-blue-50 text-blue-700 border border-blue-200' : 'hover:bg-gray-50 text-gray-700'}`}>
+                        {Icons.folder}
+                        <div className="flex-1 min-w-0">
+                          <p className="truncate font-medium">{f.name}</p>
+                          {posted ? <p className="text-xs text-green-500">投稿済み</p>
+                            : registered ? <p className="text-xs text-blue-500">自動投稿登録済み（{meta.post_id}）</p>
+                            : <p className="text-xs text-orange-400">未登録</p>}
+                        </div>
+                      </button>
+                      {!registered && (
+                        <button onClick={() => linkFolder(f.name)} title="自動投稿に登録"
+                          className="p-1.5 text-blue-500 hover:bg-blue-50 rounded shrink-0">
+                          {Icons.plus}
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -627,9 +658,13 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
   };
 
   const defaultTags = (templates && templates.tags) ? templates.tags.join('|') : '';
+  const getNextId = () => {
+    const nums = rows.map(r => { const m = r.post_id.match(/^post_(\d+)$/); return m ? parseInt(m[1]) : 0; });
+    return `post_${String(Math.max(0, ...nums) + 1).padStart(3, '0')}`;
+  };
   const addRow = () => {
-    const id = `post_${String(rows.length + 1).padStart(3, '0')}`;
-    const newRow = { post_id: id, title: '', tags: defaultTags, caption: '', x_restrict: '1', ai_type: '2', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' };
+    const id = getNextId();
+    const newRow = { post_id: id, drive_folder: id, title: '', tags: defaultTags, caption: '', x_restrict: '1', ai_type: '2', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' };
     setRows([...rows, newRow]);
     setEditIdx(rows.length);
     setEditRow({ ...newRow });
@@ -664,6 +699,7 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
         <table className="w-full">
           <thead><tr className="bg-gray-50 border-b">
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">ID</th>
+            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">フォルダ</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">タイトル</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">タグ</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">制限</th>
@@ -673,6 +709,7 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
           <tbody>{rows.map((row, idx) => (
             <tr key={idx} className="border-b last:border-0 hover:bg-gray-50 transition">
               <td className="px-4 py-3"><span className="text-sm font-mono text-gray-700">{row.post_id}</span></td>
+              <td className="px-4 py-3"><span className="text-xs font-mono text-gray-400">{row.drive_folder || <span className="italic">未設定</span>}</span></td>
               <td className="px-4 py-3"><span className="text-sm text-gray-700">{row.title || <span className="text-gray-400 italic">デフォルト</span>}</span></td>
               <td className="px-4 py-3"><div className="flex flex-wrap gap-1">{row.tags ? row.tags.split('|').filter(Boolean).slice(0, 5).map((t, i) => <span key={i} className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full text-xs">{t.trim()}</span>) : <span className="text-gray-400 italic text-xs">デフォルト</span>}{row.tags && row.tags.split('|').filter(Boolean).length > 5 && <span className="text-gray-400 text-xs">+{row.tags.split('|').filter(Boolean).length - 5}</span>}</div></td>
               <td className="px-4 py-3">{row.x_restrict === '1' ? <Badge type="danger">R-18</Badge> : <Badge type="success">全年齢</Badge>}</td>
@@ -696,9 +733,15 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
               <button onClick={closeEdit} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
             </div>
             <div className="p-6 space-y-5">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">投稿ID</label>
-                <input value={editRow.post_id} onChange={e => setEditRow({ ...editRow, post_id: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm font-mono" />
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">投稿ID</label>
+                  <input value={editRow.post_id} onChange={e => setEditRow({ ...editRow, post_id: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm font-mono" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">画像フォルダ</label>
+                  <input value={editRow.drive_folder || ''} onChange={e => setEditRow({ ...editRow, drive_folder: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm font-mono bg-gray-50" placeholder="Google Driveフォルダ名" />
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">タイトル</label>
@@ -933,7 +976,7 @@ function App() {
         {loading ? <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" /></div> : <>
           {page === 'dashboard' && <DashboardPage config={config} metadata={metadata} perfLog={perfLog} />}
           {page === 'queue' && <QueuePage metadata={metadata} metaSha={metaSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} setPage={setPage} templates={templates} />}
-          {page === 'images' && <ImagesPage drive={driveRef.current} rootFolderId={rootFolderId} metadata={metadata} metaSha={metaSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} />}
+          {page === 'images' && <ImagesPage drive={driveRef.current} rootFolderId={rootFolderId} metadata={metadata} metaSha={metaSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} templates={templates} />}
           {page === 'schedule' && <SchedulePage config={config} configSha={configSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} />}
           {page === 'templates' && <TemplatesPage templates={templates} templatesSha={templatesSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} />}
           {page === 'analytics' && <AnalyticsPage perfLog={perfLog} />}
