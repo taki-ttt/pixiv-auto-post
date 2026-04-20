@@ -611,9 +611,10 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
   const [editRow, setEditRow] = useState(null);
   useEffect(() => setRows(metadata), [metadata]);
 
+  const defaultTags = (templates && templates.tags) ? templates.tags.join('|') : '';
   const addRow = () => {
     const id = `post_${String(rows.length + 1).padStart(3, '0')}`;
-    const newRow = { post_id: id, title: '', tags: '', caption: '', x_restrict: '', ai_type: '', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' };
+    const newRow = { post_id: id, title: '', tags: defaultTags, caption: '', x_restrict: '1', ai_type: '2', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' };
     setRows([...rows, newRow]);
     setEditIdx(rows.length);
     setEditRow({ ...newRow });
@@ -697,7 +698,7 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">キャプション</label>
-                <textarea value={editRow.caption} onChange={e => setEditRow({ ...editRow, caption: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm h-20 resize-none" placeholder="空欄の場合はテンプレートの値を使用" />
+                <textarea value={editRow.caption} onChange={e => setEditRow({ ...editRow, caption: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm h-44 resize-y" placeholder="空欄の場合はテンプレートの値を使用" />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
