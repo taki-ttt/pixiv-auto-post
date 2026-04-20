@@ -125,24 +125,32 @@ class DriveAPI {
   }
 }
 
-// ── CSV ──
-function parseCSVLine(line) {
-  const result = []; let current = ''; let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
+// ── CSV (RFC 4180準拠: 改行・カンマ・引用符を含むフィールド対応) ──
+function parseCSV(text) {
+  const rows = []; let current = []; let field = ''; let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
     if (inQuotes) {
-      if (line[i] === '"' && line[i+1] === '"') { current += '"'; i++; }
-      else if (line[i] === '"') { inQuotes = false; }
-      else { current += line[i]; }
+      if (c === '"' && text[i+1] === '"') { field += '"'; i++; }
+      else if (c === '"') { inQuotes = false; }
+      else { field += c; }
     } else {
-      if (line[i] === '"') { inQuotes = true; }
-      else if (line[i] === ',') { result.push(current); current = ''; }
-      else { current += line[i]; }
+      if (c === '"') { inQuotes = true; }
+      else if (c === ',') { current.push(field); field = ''; }
+      else if (c === '\n' || (c === '\r' && text[i+1] === '\n')) {
+        if (c === '\r') i++;
+        current.push(field); field = '';
+        if (current.some(f => f !== '')) rows.push(current);
+        current = [];
+      } else { field += c; }
     }
   }
-  result.push(current); return result;
+  if (field || current.length > 0) { current.push(field); if (current.some(f => f !== '')) rows.push(current); }
+  if (rows.length < 1) return [];
+  const headers = rows[0].map(s => s.trim());
+  return rows.slice(1).map(r => { const o = {}; headers.forEach((k, i) => o[k] = (r[i] || '').trim()); return o; });
 }
-function parseCSV(text) { const l = text.trim().split('\n'); if (l.length < 1) return []; const h = parseCSVLine(l[0]).map(s => s.trim()); return l.slice(1).map(line => { const v = parseCSVLine(line); const o = {}; h.forEach((k, i) => o[k] = (v[i] || '').trim()); return o; }); }
-function escapeCSVField(val) { const s = String(val || ''); return (s.includes(',') || s.includes('"') || s.includes('\n')) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+function escapeCSVField(val) { const s = String(val || ''); return (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) ? '"' + s.replace(/"/g, '""') + '"' : s; }
 function serializeCSV(rows, headers) { const h = headers || Object.keys(rows[0] || {}); return [h.join(','), ...rows.map(r => h.map(k => escapeCSVField(r[k])).join(','))].join('\n') + '\n'; }
 const META_HEADERS = ['post_id','title','tags','caption','x_restrict','ai_type','restrict','posted','posted_at','pixiv_id','image_count'];
 
