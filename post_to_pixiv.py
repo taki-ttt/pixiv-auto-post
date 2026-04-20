@@ -88,7 +88,7 @@ def get_today_post_count() -> int:
 #  metadata.csv 操作
 # ──────────────────────────────────────────────
 METADATA_FIELDS = [
-    "post_id", "title", "tags", "caption",
+    "post_id", "drive_folder", "title", "tags", "caption",
     "x_restrict", "ai_type", "restrict",
     "posted", "posted_at", "pixiv_id", "image_count",
 ]
@@ -310,16 +310,18 @@ def main() -> None:
         return
 
     post_id = entry["post_id"]
-    log.info("投稿対象: %s", post_id)
+    # drive_folder があればそれを使い、なければ post_id をフォルダ名とする
+    drive_folder = entry.get("drive_folder", "").strip() or post_id
+    log.info("投稿対象: %s (フォルダ: %s)", post_id, drive_folder)
 
     # ④ テンプレート適用 (空欄ならテンプレートの値を使用)
     title   = entry.get("title",  "").strip() or tmpl["title"]
     raw_tag = entry.get("tags",   "").strip()
     tags    = [t.strip() for t in raw_tag.split("|") if t.strip()] if raw_tag else tmpl["tags"]
     caption = entry.get("caption","").strip() or tmpl["caption"]
-    x_restr = int(entry.get("x_restrict", tmpl.get("x_restrict", 0)))
-    ai_type = int(entry.get("ai_type",    tmpl.get("ai_type",    2)))
-    restrict= int(entry.get("restrict",   tmpl.get("restrict",   0)))
+    x_restr = int(entry.get("x_restrict", tmpl.get("x_restrict", 0)) or tmpl.get("x_restrict", 0))
+    ai_type = int(entry.get("ai_type",    tmpl.get("ai_type",    2)) or tmpl.get("ai_type", 2))
+    restrict= int(entry.get("restrict",   tmpl.get("restrict",   0)) or tmpl.get("restrict", 0))
 
     log.info("タイトル: %s", title)
     log.info("タグ:     %s", " / ".join(tags))
@@ -328,9 +330,9 @@ def main() -> None:
     svc = get_drive_service()
     root_folder_id = os.environ["PIXIV_DRIVE_FOLDER_ID"]
 
-    post_folder_id = find_post_folder(svc, root_folder_id, post_id)
+    post_folder_id = find_post_folder(svc, root_folder_id, drive_folder)
     if not post_folder_id:
-        log.error("Google Drive 上に %s フォルダが見つかりません", post_id)
+        log.error("Google Drive 上に %s フォルダが見つかりません", drive_folder)
         return
 
     posted_folder_id = ensure_posted_folder(svc, root_folder_id)
