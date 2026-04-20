@@ -325,7 +325,7 @@ function LoginScreen({ onLogin }) {
 function Sidebar({ page, setPage, onLogout, googleUser }) {
   const items = [
     { id: 'dashboard', label: 'ダッシュボード', icon: Icons.dashboard },
-    { id: 'queue', label: '投稿キュー', icon: Icons.queue },
+    { id: 'queue', label: '自動投稿', icon: Icons.queue },
     { id: 'images', label: '画像管理', icon: Icons.upload },
     { id: 'schedule', label: 'スケジュール', icon: Icons.schedule },
     { id: 'templates', label: 'テンプレート', icon: Icons.template },
@@ -474,7 +474,7 @@ function ImagesPage({ drive, rootFolderId, metadata, metaSha, api, onRefresh, sh
         rows.push({ post_id: newFolderName.trim(), title: '', tags: '', caption: '', x_restrict: '', ai_type: '', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' });
         const csv = serializeCSV(rows, META_HEADERS);
         await api.putFile('metadata.csv', csv, metaSha, `dashboard: add ${newFolderName} to queue`);
-        showToast('投稿キューにも自動追加しました', 'success');
+        showToast('自動投稿にも自動追加しました', 'success');
       }
       loadFolders();
       onRefresh();
@@ -507,7 +507,7 @@ function ImagesPage({ drive, rootFolderId, metadata, metaSha, api, onRefresh, sh
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 fade-in">
           <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-2xl">
             <h3 className="font-bold text-gray-800 mb-4">新規投稿フォルダを作成</h3>
-            <p className="text-sm text-gray-500 mb-3">フォルダ名がそのまま投稿IDになります。投稿キューにも自動追加されます。</p>
+            <p className="text-sm text-gray-500 mb-3">フォルダ名がそのまま投稿IDになります。自動投稿にも自動追加されます。</p>
             <input type="text" value={newFolderName} onChange={e => setNewFolderName(e.target.value)}
               className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm mb-4" placeholder="例: post_004" autoFocus />
             <div className="flex gap-2 justify-end">
@@ -619,6 +619,13 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
   const [editRow, setEditRow] = useState(null);
   useEffect(() => setRows(metadata), [metadata]);
 
+  const saveRows = async (newRows) => {
+    setSaving(true);
+    try { await api.putFile('metadata.csv', serializeCSV(newRows, META_HEADERS), metaSha, 'dashboard: update metadata.csv'); showToast('保存しました', 'success'); onRefresh(); }
+    catch (e) { showToast('保存失敗: ' + e.message, 'error'); }
+    setSaving(false);
+  };
+
   const defaultTags = (templates && templates.tags) ? templates.tags.join('|') : '';
   const addRow = () => {
     const id = `post_${String(rows.length + 1).padStart(3, '0')}`;
@@ -629,18 +636,17 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
   };
   const openEdit = (idx) => { setEditIdx(idx); setEditRow({ ...rows[idx] }); };
   const closeEdit = () => { setEditIdx(null); setEditRow(null); };
-  const confirmEdit = () => {
+  const confirmEdit = async () => {
     if (editIdx !== null && editRow) {
       const n = [...rows]; n[editIdx] = editRow; setRows(n);
+      await saveRows(n);
     }
     closeEdit();
   };
-  const deleteRow = (idx) => { if (rows[idx].posted === 'yes') { showToast('投稿済みは削除不可', 'error'); return; } setRows(rows.filter((_, i) => i !== idx)); };
-  const saveAll = async () => {
-    setSaving(true);
-    try { await api.putFile('metadata.csv', serializeCSV(rows, META_HEADERS), metaSha, 'dashboard: update metadata.csv'); showToast('保存しました', 'success'); onRefresh(); }
-    catch (e) { showToast('保存失敗: ' + e.message, 'error'); }
-    setSaving(false);
+  const deleteRow = async (idx) => {
+    if (rows[idx].posted === 'yes') { showToast('投稿済みは削除不可', 'error'); return; }
+    const n = rows.filter((_, i) => i !== idx); setRows(n);
+    await saveRows(n);
   };
   const pending = rows.filter(r => r.posted !== 'yes'); const posted = rows.filter(r => r.posted === 'yes');
   const recTags = (templates && templates.recommended_tags) || [];
@@ -648,11 +654,10 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
   return (
     <div className="fade-in">
       <div className="flex items-center justify-between mb-6">
-        <div><h2 className="text-2xl font-bold text-gray-800">投稿キュー</h2><p className="text-sm text-gray-500 mt-1">待機: {pending.length}件 / 投稿済み: {posted.length}件</p></div>
+        <div><h2 className="text-2xl font-bold text-gray-800">自動投稿</h2><p className="text-sm text-gray-500 mt-1">待機: {pending.length}件 / 投稿済み: {posted.length}件</p></div>
         <div className="flex gap-2">
           <button onClick={() => setPage('images')} className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition">{Icons.upload} 画像管理</button>
           <button onClick={addRow} className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition">{Icons.plus} 追加</button>
-          <button onClick={saveAll} disabled={saving} className="flex items-center gap-1.5 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-50">{Icons.save} {saving ? '保存中...' : '保存'}</button>
         </div>
       </div>
       <div className="bg-white rounded-xl border overflow-hidden">
@@ -724,8 +729,8 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
               </div>
             </div>
             <div className="flex justify-end gap-3 p-6 border-t bg-gray-50 rounded-b-2xl">
-              <button onClick={closeEdit} className="px-4 py-2 text-gray-600 hover:text-gray-800 text-sm font-medium">キャンセル</button>
-              <button onClick={confirmEdit} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition">適用</button>
+              <button onClick={closeEdit} disabled={saving} className="px-4 py-2 text-gray-600 hover:text-gray-800 text-sm font-medium">キャンセル</button>
+              <button onClick={confirmEdit} disabled={saving} className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-50">{saving ? '保存中...' : '保存'}</button>
             </div>
           </div>
         </div>
