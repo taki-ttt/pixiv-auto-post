@@ -643,12 +643,44 @@ function ImagesPage({ drive, rootFolderId, metadata, metaSha, api, onRefresh, sh
 }
 
 // ── Queue Page ──
-function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, templates }) {
+function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, templates, config }) {
   const [rows, setRows] = useState(metadata);
   const [saving, setSaving] = useState(false);
   const [editIdx, setEditIdx] = useState(null);
   const [editRow, setEditRow] = useState(null);
   useEffect(() => setRows(metadata), [metadata]);
+
+  // スケジュール枠を待機中の投稿に割り当て
+  const scheduleSlots = (config.post_schedule_jst || []).slice().sort();
+  const dailyLimit = config.daily_post_limit || 10;
+  const getScheduleMap = () => {
+    const map = {};
+    if (scheduleSlots.length === 0) return map;
+    const pending = rows.filter(r => r.posted !== 'yes');
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes() + (now.getTimezoneOffset() + 540); // JST
+    let slotIdx = 0; let dayOffset = 0; let dailyCount = 0;
+    // 今日の残りスロットから開始
+    for (let i = 0; i < scheduleSlots.length; i++) {
+      const [h, m] = scheduleSlots[i].split(':').map(Number);
+      if (h * 60 + m > nowMinutes) { slotIdx = i; break; }
+      if (i === scheduleSlots.length - 1) { slotIdx = 0; dayOffset = 1; }
+    }
+    for (const row of pending) {
+      if (dailyCount >= Math.min(dailyLimit, scheduleSlots.length)) { dailyCount = 0; dayOffset++; slotIdx = 0; }
+      const d = new Date(now); d.setDate(d.getDate() + dayOffset);
+      const dateStr = `${d.getMonth() + 1}/${d.getDate()}`;
+      const dayNames = ['日','月','火','水','木','金','土'];
+      const dayName = dayNames[d.getDay()];
+      map[row.post_id] = { time: scheduleSlots[slotIdx], date: dateStr, day: dayName, dayOffset };
+      slotIdx++;
+      dailyCount++;
+      if (slotIdx >= scheduleSlots.length) { slotIdx = 0; dailyCount = 0; dayOffset++; }
+    }
+    return map;
+  };
+  const scheduleMap = getScheduleMap();
 
   const saveRows = async (newRows) => {
     setSaving(true);
@@ -698,23 +730,33 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, temp
       <div className="bg-white rounded-xl border overflow-hidden">
         <table className="w-full">
           <thead><tr className="bg-gray-50 border-b">
-            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">ID</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">フォルダ</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">タイトル</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">タグ</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">制限</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">ステータス</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">操作</th>
+            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase">投稿予定</th>
+            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase">ID</th>
+            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase">タイトル</th>
+            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase">タグ</th>
+            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase">制限</th>
+            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase">ステータス</th>
+            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase">操作</th>
           </tr></thead>
           <tbody>{rows.map((row, idx) => (
             <tr key={idx} className="border-b last:border-0 hover:bg-gray-50 transition">
-              <td className="px-4 py-3"><span className="text-sm font-mono text-gray-700">{row.post_id}</span></td>
-              <td className="px-4 py-3"><span className="text-xs font-mono text-gray-400">{row.drive_folder || <span className="italic">未設定</span>}</span></td>
-              <td className="px-4 py-3"><span className="text-sm text-gray-700">{row.title || <span className="text-gray-400 italic">デフォルト</span>}</span></td>
-              <td className="px-4 py-3"><div className="flex flex-wrap gap-1">{row.tags ? row.tags.split('|').filter(Boolean).slice(0, 5).map((t, i) => <span key={i} className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full text-xs">{t.trim()}</span>) : <span className="text-gray-400 italic text-xs">デフォルト</span>}{row.tags && row.tags.split('|').filter(Boolean).length > 5 && <span className="text-gray-400 text-xs">+{row.tags.split('|').filter(Boolean).length - 5}</span>}</div></td>
-              <td className="px-4 py-3">{row.x_restrict === '1' ? <Badge type="danger">R-18</Badge> : <Badge type="success">全年齢</Badge>}</td>
-              <td className="px-4 py-3">{row.posted === 'yes' ? <Badge type="success">投稿済み</Badge> : <Badge type="warning">待機中</Badge>}</td>
-              <td className="px-4 py-3"><div className="flex gap-1">
+              <td className="px-3 py-3">{(() => {
+                if (row.posted === 'yes') return <span className="text-xs text-gray-400">{row.posted_at || '—'}</span>;
+                const s = scheduleMap[row.post_id];
+                if (!s) return <span className="text-xs text-gray-400">未設定</span>;
+                return (
+                  <div className="text-center">
+                    <p className="text-sm font-bold text-blue-600">{s.time}</p>
+                    <p className="text-xs text-gray-500">{s.date}({s.day}){s.dayOffset === 0 ? ' 今日' : s.dayOffset === 1 ? ' 明日' : ''}</p>
+                  </div>
+                );
+              })()}</td>
+              <td className="px-3 py-3"><span className="text-sm font-mono text-gray-700">{row.post_id}</span></td>
+              <td className="px-3 py-3"><span className="text-sm text-gray-700">{row.title || <span className="text-gray-400 italic">デフォルト</span>}</span></td>
+              <td className="px-3 py-3"><div className="flex flex-wrap gap-1">{row.tags ? row.tags.split('|').filter(Boolean).slice(0, 5).map((t, i) => <span key={i} className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full text-xs">{t.trim()}</span>) : <span className="text-gray-400 italic text-xs">デフォルト</span>}{row.tags && row.tags.split('|').filter(Boolean).length > 5 && <span className="text-gray-400 text-xs">+{row.tags.split('|').filter(Boolean).length - 5}</span>}</div></td>
+              <td className="px-3 py-3">{row.x_restrict === '1' ? <Badge type="danger">R-18</Badge> : <Badge type="success">全年齢</Badge>}</td>
+              <td className="px-3 py-3">{row.posted === 'yes' ? <Badge type="success">投稿済み</Badge> : <Badge type="warning">待機中</Badge>}</td>
+              <td className="px-3 py-3"><div className="flex gap-1">
                 <button onClick={() => openEdit(idx)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded">{Icons.edit}</button>
                 {row.posted !== 'yes' && <button onClick={() => deleteRow(idx)} className="p-1.5 text-red-500 hover:bg-red-50 rounded">{Icons.trash}</button>}
               </div></td>
@@ -975,7 +1017,7 @@ function App() {
       <main className="flex-1 ml-60 p-8 min-h-screen">
         {loading ? <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" /></div> : <>
           {page === 'dashboard' && <DashboardPage config={config} metadata={metadata} perfLog={perfLog} />}
-          {page === 'queue' && <QueuePage metadata={metadata} metaSha={metaSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} setPage={setPage} templates={templates} />}
+          {page === 'queue' && <QueuePage metadata={metadata} metaSha={metaSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} setPage={setPage} templates={templates} config={config} />}
           {page === 'images' && <ImagesPage drive={driveRef.current} rootFolderId={rootFolderId} metadata={metadata} metaSha={metaSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} templates={templates} />}
           {page === 'schedule' && <SchedulePage config={config} configSha={configSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} />}
           {page === 'templates' && <TemplatesPage templates={templates} templatesSha={templatesSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} />}
