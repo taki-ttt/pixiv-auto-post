@@ -72,7 +72,7 @@ class GitHubAPI {
     if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
     return res.json();
   }
-  async getFile(path) { const d = await this.request(`/contents/${path}`); return { content: atob(d.content), sha: d.sha }; }
+  async getFile(path) { const d = await this.request(`/contents/${path}`); return { content: decodeURIComponent(escape(atob(d.content))), sha: d.sha }; }
   async putFile(path, content, sha, message) { return this.request(`/contents/${path}`, { method: 'PUT', body: JSON.stringify({ message, content: btoa(unescape(encodeURIComponent(content))), sha }) }); }
 }
 
@@ -126,9 +126,85 @@ class DriveAPI {
 }
 
 // ── CSV ──
-function parseCSV(text) { const l = text.trim().split('\n'); if (l.length < 1) return []; const h = l[0].split(','); return l.slice(1).map(line => { const v = line.split(','); const o = {}; h.forEach((k, i) => o[k.trim()] = (v[i] || '').trim()); return o; }); }
-function serializeCSV(rows, headers) { const h = headers || Object.keys(rows[0] || {}); return [h.join(','), ...rows.map(r => h.map(k => r[k] || '').join(','))].join('\n') + '\n'; }
+function parseCSVLine(line) {
+  const result = []; let current = ''; let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    if (inQuotes) {
+      if (line[i] === '"' && line[i+1] === '"') { current += '"'; i++; }
+      else if (line[i] === '"') { inQuotes = false; }
+      else { current += line[i]; }
+    } else {
+      if (line[i] === '"') { inQuotes = true; }
+      else if (line[i] === ',') { result.push(current); current = ''; }
+      else { current += line[i]; }
+    }
+  }
+  result.push(current); return result;
+}
+function parseCSV(text) { const l = text.trim().split('\n'); if (l.length < 1) return []; const h = parseCSVLine(l[0]).map(s => s.trim()); return l.slice(1).map(line => { const v = parseCSVLine(line); const o = {}; h.forEach((k, i) => o[k] = (v[i] || '').trim()); return o; }); }
+function escapeCSVField(val) { const s = String(val || ''); return (s.includes(',') || s.includes('"') || s.includes('\n')) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+function serializeCSV(rows, headers) { const h = headers || Object.keys(rows[0] || {}); return [h.join(','), ...rows.map(r => h.map(k => escapeCSVField(r[k])).join(','))].join('\n') + '\n'; }
 const META_HEADERS = ['post_id','title','tags','caption','x_restrict','ai_type','restrict','posted','posted_at','pixiv_id','image_count'];
+
+// ── Pixiv風タグ入力 ──
+const POPULAR_TAGS = ['AI生成','AIイラスト','AI art','オリジナル','女の子','1girl','イラスト','illustration','美少女','創作'];
+
+function TagInput({ tags, onChange, recommended }) {
+  const [input, setInput] = useState('');
+  const [showSuggest, setShowSuggest] = useState(false);
+  const inputRef = useRef(null);
+  const tagList = tags ? tags.split('|').filter(Boolean) : [];
+  const allSuggestions = [...new Set([...(recommended || []), ...POPULAR_TAGS])];
+  const filtered = input.trim() ? allSuggestions.filter(t => t.toLowerCase().includes(input.toLowerCase()) && !tagList.includes(t)) : allSuggestions.filter(t => !tagList.includes(t));
+
+  const addTag = (tag) => {
+    const t = tag.trim();
+    if (!t || tagList.includes(t)) return;
+    if (tagList.length >= 10) return;
+    onChange([...tagList, t].join('|'));
+    setInput(''); setShowSuggest(false);
+    inputRef.current?.focus();
+  };
+  const removeTag = (idx) => { const n = [...tagList]; n.splice(idx, 1); onChange(n.join('|')); };
+  const handleKeyDown = (e) => {
+    if ((e.key === 'Enter' || e.key === ' ' || e.key === ',' || e.key === '　') && input.trim()) { e.preventDefault(); addTag(input); }
+    if (e.key === 'Backspace' && !input && tagList.length > 0) removeTag(tagList.length - 1);
+    if (e.key === 'Escape') setShowSuggest(false);
+  };
+
+  return (
+    <div className="relative">
+      <div className="flex flex-wrap gap-1.5 p-2 border rounded-lg bg-white min-h-[42px] cursor-text" onClick={() => inputRef.current?.focus()}>
+        {tagList.map((tag, i) => (
+          <span key={i} className="inline-flex items-center gap-1 bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-xs font-medium">
+            {tag}
+            <button onClick={(e) => { e.stopPropagation(); removeTag(i); }} className="hover:text-red-500 ml-0.5">×</button>
+          </span>
+        ))}
+        {tagList.length < 10 && (
+          <input ref={inputRef} value={input} onChange={e => { setInput(e.target.value); setShowSuggest(true); }}
+            onFocus={() => setShowSuggest(true)} onBlur={() => setTimeout(() => setShowSuggest(false), 200)}
+            onKeyDown={handleKeyDown} placeholder={tagList.length === 0 ? "タグを入力（Enterで追加）" : tagList.length < 10 ? `残り${10 - tagList.length}個` : ''}
+            className="flex-1 min-w-[100px] outline-none text-sm py-0.5 bg-transparent" />
+        )}
+      </div>
+      <div className="flex items-center justify-between mt-1">
+        <span className="text-xs text-gray-400">{tagList.length}/10 タグ</span>
+        {tagList.length >= 10 && <span className="text-xs text-orange-500">上限に達しています</span>}
+      </div>
+      {showSuggest && filtered.length > 0 && (
+        <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          <div className="px-3 py-1.5 text-xs text-gray-400 border-b">おすすめタグ</div>
+          {filtered.slice(0, 10).map((t, i) => (
+            <button key={i} onMouseDown={(e) => { e.preventDefault(); addTag(t); }} className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 hover:text-blue-600 transition flex items-center gap-2">
+              <span className="text-blue-400 text-xs">#</span>{t}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Badge ──
 function Badge({ type, children }) {
@@ -528,13 +604,28 @@ function ImagesPage({ drive, rootFolderId, metadata, metaSha, api, onRefresh, sh
 }
 
 // ── Queue Page ──
-function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage }) {
+function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage, templates }) {
   const [rows, setRows] = useState(metadata);
   const [saving, setSaving] = useState(false);
   const [editIdx, setEditIdx] = useState(null);
+  const [editRow, setEditRow] = useState(null);
   useEffect(() => setRows(metadata), [metadata]);
-  const addRow = () => { const id = `post_${String(rows.length + 1).padStart(3, '0')}`; setRows([...rows, { post_id: id, title: '', tags: '', caption: '', x_restrict: '', ai_type: '', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' }]); setEditIdx(rows.length); };
-  const updateRow = (idx, f, v) => { const n = [...rows]; n[idx] = { ...n[idx], [f]: v }; setRows(n); };
+
+  const addRow = () => {
+    const id = `post_${String(rows.length + 1).padStart(3, '0')}`;
+    const newRow = { post_id: id, title: '', tags: '', caption: '', x_restrict: '', ai_type: '', restrict: '', posted: '', posted_at: '', pixiv_id: '', image_count: '' };
+    setRows([...rows, newRow]);
+    setEditIdx(rows.length);
+    setEditRow({ ...newRow });
+  };
+  const openEdit = (idx) => { setEditIdx(idx); setEditRow({ ...rows[idx] }); };
+  const closeEdit = () => { setEditIdx(null); setEditRow(null); };
+  const confirmEdit = () => {
+    if (editIdx !== null && editRow) {
+      const n = [...rows]; n[editIdx] = editRow; setRows(n);
+    }
+    closeEdit();
+  };
   const deleteRow = (idx) => { if (rows[idx].posted === 'yes') { showToast('投稿済みは削除不可', 'error'); return; } setRows(rows.filter((_, i) => i !== idx)); };
   const saveAll = async () => {
     setSaving(true);
@@ -543,6 +634,8 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage }) {
     setSaving(false);
   };
   const pending = rows.filter(r => r.posted !== 'yes'); const posted = rows.filter(r => r.posted === 'yes');
+  const recTags = (templates && templates.recommended_tags) || [];
+
   return (
     <div className="fade-in">
       <div className="flex items-center justify-between mb-6">
@@ -565,13 +658,13 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage }) {
           </tr></thead>
           <tbody>{rows.map((row, idx) => (
             <tr key={idx} className="border-b last:border-0 hover:bg-gray-50 transition">
-              <td className="px-4 py-3">{editIdx === idx ? <input value={row.post_id} onChange={e => updateRow(idx, 'post_id', e.target.value)} className="w-24 px-2 py-1 border rounded text-sm" /> : <span className="text-sm font-mono text-gray-700">{row.post_id}</span>}</td>
-              <td className="px-4 py-3">{editIdx === idx ? <input value={row.title} onChange={e => updateRow(idx, 'title', e.target.value)} className="w-full px-2 py-1 border rounded text-sm" placeholder="(デフォルト)" /> : <span className="text-sm text-gray-700">{row.title || <span className="text-gray-400 italic">デフォルト</span>}</span>}</td>
-              <td className="px-4 py-3">{editIdx === idx ? <input value={row.tags} onChange={e => updateRow(idx, 'tags', e.target.value)} className="w-full px-2 py-1 border rounded text-sm" placeholder="タグ1|タグ2" /> : <div className="flex flex-wrap gap-1">{row.tags ? row.tags.split('|').slice(0, 3).map((t, i) => <span key={i} className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded text-xs">{t.trim()}</span>) : <span className="text-gray-400 italic text-xs">デフォルト</span>}</div>}</td>
-              <td className="px-4 py-3">{editIdx === idx ? <select value={row.x_restrict} onChange={e => updateRow(idx, 'x_restrict', e.target.value)} className="px-2 py-1 border rounded text-sm"><option value="">デフォルト</option><option value="0">全年齢</option><option value="1">R-18</option></select> : row.x_restrict === '1' ? <Badge type="danger">R-18</Badge> : <Badge type="success">全年齢</Badge>}</td>
+              <td className="px-4 py-3"><span className="text-sm font-mono text-gray-700">{row.post_id}</span></td>
+              <td className="px-4 py-3"><span className="text-sm text-gray-700">{row.title || <span className="text-gray-400 italic">デフォルト</span>}</span></td>
+              <td className="px-4 py-3"><div className="flex flex-wrap gap-1">{row.tags ? row.tags.split('|').filter(Boolean).slice(0, 5).map((t, i) => <span key={i} className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full text-xs">{t.trim()}</span>) : <span className="text-gray-400 italic text-xs">デフォルト</span>}{row.tags && row.tags.split('|').filter(Boolean).length > 5 && <span className="text-gray-400 text-xs">+{row.tags.split('|').filter(Boolean).length - 5}</span>}</div></td>
+              <td className="px-4 py-3">{row.x_restrict === '1' ? <Badge type="danger">R-18</Badge> : <Badge type="success">全年齢</Badge>}</td>
               <td className="px-4 py-3">{row.posted === 'yes' ? <Badge type="success">投稿済み</Badge> : <Badge type="warning">待機中</Badge>}</td>
               <td className="px-4 py-3"><div className="flex gap-1">
-                {editIdx === idx ? <button onClick={() => setEditIdx(null)} className="p-1.5 text-green-600 hover:bg-green-50 rounded">{Icons.save}</button> : <button onClick={() => setEditIdx(idx)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded">{Icons.edit}</button>}
+                <button onClick={() => openEdit(idx)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded">{Icons.edit}</button>
                 {row.posted !== 'yes' && <button onClick={() => deleteRow(idx)} className="p-1.5 text-red-500 hover:bg-red-50 rounded">{Icons.trash}</button>}
               </div></td>
             </tr>
@@ -579,6 +672,55 @@ function QueuePage({ metadata, metaSha, api, onRefresh, showToast, setPage }) {
         </table>
         {rows.length === 0 && <div className="py-12 text-center text-gray-400"><button onClick={addRow} className="text-blue-500 hover:text-blue-700 text-sm">+ 新しいエントリを追加</button></div>}
       </div>
+
+      {/* 編集モーダル */}
+      {editRow && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4" onClick={closeEdit}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-6 border-b">
+              <h3 className="text-lg font-bold text-gray-800">投稿を編集</h3>
+              <button onClick={closeEdit} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+            </div>
+            <div className="p-6 space-y-5">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">投稿ID</label>
+                <input value={editRow.post_id} onChange={e => setEditRow({ ...editRow, post_id: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm font-mono" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">タイトル</label>
+                <input value={editRow.title} onChange={e => setEditRow({ ...editRow, title: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="空欄の場合はテンプレートの値を使用" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">タグ（最大10個）</label>
+                <TagInput tags={editRow.tags} onChange={v => setEditRow({ ...editRow, tags: v })} recommended={recTags} />
+                <p className="text-xs text-gray-400 mt-1">Enter・スペース・カンマで追加、おすすめタグをクリックでも追加できます</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">キャプション</label>
+                <textarea value={editRow.caption} onChange={e => setEditRow({ ...editRow, caption: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm h-20 resize-none" placeholder="空欄の場合はテンプレートの値を使用" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">年齢制限</label>
+                  <select value={editRow.x_restrict} onChange={e => setEditRow({ ...editRow, x_restrict: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm">
+                    <option value="">デフォルト</option><option value="0">全年齢</option><option value="1">R-18</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">AI作品タイプ</label>
+                  <select value={editRow.ai_type} onChange={e => setEditRow({ ...editRow, ai_type: e.target.value })} className="w-full px-3 py-2 border rounded-lg text-sm">
+                    <option value="">デフォルト</option><option value="2">AI生成</option><option value="1">AI非使用</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 p-6 border-t bg-gray-50 rounded-b-2xl">
+              <button onClick={closeEdit} className="px-4 py-2 text-gray-600 hover:text-gray-800 text-sm font-medium">キャンセル</button>
+              <button onClick={confirmEdit} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition">適用</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -776,7 +918,7 @@ function App() {
       <main className="flex-1 ml-60 p-8 min-h-screen">
         {loading ? <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" /></div> : <>
           {page === 'dashboard' && <DashboardPage config={config} metadata={metadata} perfLog={perfLog} />}
-          {page === 'queue' && <QueuePage metadata={metadata} metaSha={metaSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} setPage={setPage} />}
+          {page === 'queue' && <QueuePage metadata={metadata} metaSha={metaSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} setPage={setPage} templates={templates} />}
           {page === 'images' && <ImagesPage drive={driveRef.current} rootFolderId={rootFolderId} metadata={metadata} metaSha={metaSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} />}
           {page === 'schedule' && <SchedulePage config={config} configSha={configSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} />}
           {page === 'templates' && <TemplatesPage templates={templates} templatesSha={templatesSha} api={apiRef.current} onRefresh={loadData} showToast={showToast} />}
