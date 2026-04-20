@@ -56,20 +56,21 @@ def load_templates() -> dict:
 
 
 # ──────────────────────────────────────────────
-#  時刻チェック
+#  時刻チェック（経過スロット方式）
 # ──────────────────────────────────────────────
-def is_post_time(schedule: list[str], tolerance_min: int) -> tuple[bool, str]:
-    """現在時刻が schedule のいずれかに一致するか判定。(bool, 一致した時刻文字列) を返す。
-    GitHub Actions のcronは最大30分以上遅延するため、スロット時刻から
-    tolerance_min 分「後」まで許容する（早すぎる実行は弾く）。"""
+def get_elapsed_slots(schedule: list[str]) -> list[str]:
+    """本日 JST で既に時刻を過ぎたスケジュールスロットのリストを返す。
+    例: 現在 15:30 JST, schedule=[09:00,11:00,15:00,17:00]
+        → [09:00, 11:00, 15:00] (15:00は過ぎているので含む)"""
     now = datetime.now(JST)
+    now_minutes = now.hour * 60 + now.minute
+    elapsed = []
     for slot in schedule:
         h, m = map(int, slot.split(":"))
-        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        diff_min = (now - target).total_seconds() / 60  # 正=過ぎている, 負=まだ早い
-        if -2 <= diff_min <= tolerance_min:
-            return True, slot
-    return False, ""
+        slot_minutes = h * 60 + m
+        if now_minutes >= slot_minutes:
+            elapsed.append(slot)
+    return elapsed
 
 
 def get_today_post_count() -> int:
@@ -83,6 +84,33 @@ def get_today_post_count() -> int:
         1 for r in rows
         if r.get("posted", "no").lower() == "yes"
         and r.get("posted_at", "").startswith(today)
+    )
+
+
+def should_post_now(schedule: list[str], daily_limit: int) -> tuple[bool, str]:
+    """経過スロット方式: 本日経過したスロット数 > 本日投稿済み件数 なら投稿する。
+    GitHub Actions cron の遅延に左右されない堅牢なロジック。
+    Returns: (投稿すべきか, 理由メッセージ)"""
+    elapsed = get_elapsed_slots(schedule)
+    if not elapsed:
+        return False, "本日のスケジュールスロットはまだ開始していません"
+
+    today_count = get_today_post_count()
+
+    # 日次上限チェック
+    if today_count >= daily_limit:
+        return False, f"本日の投稿上限 ({daily_limit}件) に到達済み"
+
+    # 経過スロット数と投稿済み数を比較
+    slots_should_have_posted = min(len(elapsed), daily_limit)
+    if today_count >= slots_should_have_posted:
+        return False, (
+            f"経過スロット数={len(elapsed)}, 投稿済み={today_count} → 未消化なし"
+        )
+
+    return True, (
+        f"経過スロット数={len(elapsed)}, 投稿済み={today_count} "
+        f"→ {slots_should_have_posted - today_count}件未消化あり (次: {elapsed[today_count]})"
     )
 
 
@@ -285,24 +313,16 @@ def main() -> None:
     if dry:
         log.info("=== DRY RUN モード (実際には投稿しません) ===")
 
-    # ① 投稿時刻チェック
-    hit, slot = is_post_time(
-        cfg.get("post_schedule_jst", []),
-        cfg.get("post_tolerance_minutes", 14),
-    )
-    if not hit:
-        log.info("投稿時刻ではありません。スキップ。")
-        return
-
-    log.info("スケジュール時刻 %s に一致しました", slot)
-
-    # ② 本日の投稿上限チェック
+    # ① 投稿判定（経過スロット方式）
+    schedule = cfg.get("post_schedule_jst", [])
     limit = cfg.get("daily_post_limit", 10)
-    today_cnt = get_today_post_count()
-    if today_cnt >= limit:
-        log.info("本日の投稿上限 (%d件) に達しています。スキップ。", limit)
+
+    should, reason = should_post_now(schedule, limit)
+    if not should:
+        log.info("投稿スキップ: %s", reason)
         return
-    log.info("本日投稿済み: %d / %d", today_cnt, limit)
+
+    log.info("投稿実行: %s", reason)
 
     # ③ 次の未投稿エントリを取得
     rows = read_metadata()
