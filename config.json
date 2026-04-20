@@ -15,7 +15,7 @@
   ],
 
   "daily_post_limit": 10,
-  "post_tolerance_minutes": 14,
+  "post_tolerance_minutes": 29,
 
   "stats_collect_hours_after": 48,
 

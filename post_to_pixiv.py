@@ -59,13 +59,15 @@ def load_templates() -> dict:
 #  時刻チェック
 # ──────────────────────────────────────────────
 def is_post_time(schedule: list[str], tolerance_min: int) -> tuple[bool, str]:
-    """現在時刻が schedule のいずれかに一致するか判定。(bool, 一致した時刻文字列) を返す"""
+    """現在時刻が schedule のいずれかに一致するか判定。(bool, 一致した時刻文字列) を返す。
+    GitHub Actions のcronは最大30分以上遅延するため、スロット時刻から
+    tolerance_min 分「後」まで許容する（早すぎる実行は弾く）。"""
     now = datetime.now(JST)
     for slot in schedule:
         h, m = map(int, slot.split(":"))
         target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        diff = abs((now - target).total_seconds()) / 60
-        if diff <= tolerance_min:
+        diff_min = (now - target).total_seconds() / 60  # 正=過ぎている, 負=まだ早い
+        if -2 <= diff_min <= tolerance_min:
             return True, slot
     return False, ""
 
