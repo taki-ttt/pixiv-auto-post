@@ -78,9 +78,16 @@ class GitHubAPI {
 
 // ── Google Drive API ──
 class DriveAPI {
-  constructor(accessToken) { this.token = accessToken; }
+  constructor(accessToken, refreshCallback) { this.token = accessToken; this.refreshCallback = refreshCallback; }
   async request(url, opts = {}) {
-    const res = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${this.token}`, ...opts.headers } });
+    let res = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${this.token}`, ...opts.headers } });
+    if (res.status === 401 && this.refreshCallback) {
+      const newToken = await this.refreshCallback();
+      if (newToken) {
+        this.token = newToken;
+        res = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${this.token}`, ...opts.headers } });
+      }
+    }
     if (!res.ok) throw new Error(`Drive API: ${res.status} ${await res.text()}`);
     return res.json();
   }
@@ -723,15 +730,35 @@ function App() {
     setLoading(false);
   }, []);
 
+  const refreshGoogleToken = useCallback(() => {
+    return new Promise((resolve) => {
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: DRIVE_SCOPE,
+        callback: (response) => {
+          if (response.access_token) {
+            setAuth(prev => prev ? { ...prev, googleToken: response.access_token } : prev);
+            resolve(response.access_token);
+          } else { resolve(null); }
+        },
+      });
+      client.requestAccessToken();
+    });
+  }, []);
+
   const initDrive = useCallback(async (googleToken) => {
-    const drive = new DriveAPI(googleToken);
+    const drive = new DriveAPI(googleToken, refreshGoogleToken);
     driveRef.current = drive;
     try {
-      const folder = await drive.findFolder('pixiv-posts');
-      if (folder) { setRootFolderId(folder.id); }
-      else { showToast('pixiv-posts フォルダが見つかりません。Google Driveに作成してください。', 'error'); }
+      let folder = await drive.findFolder('pixiv-posts');
+      if (!folder) {
+        showToast('pixiv-posts フォルダを作成中...', 'success');
+        folder = await drive.createFolder('pixiv-posts');
+      }
+      setRootFolderId(folder.id);
+      showToast('Google Drive に接続しました', 'success');
     } catch (e) { showToast('Drive接続エラー: ' + e.message, 'error'); }
-  }, []);
+  }, [refreshGoogleToken]);
 
   const handleLogin = (creds) => {
     apiRef.current = new GitHubAPI(creds.token, creds.owner, creds.repo);
