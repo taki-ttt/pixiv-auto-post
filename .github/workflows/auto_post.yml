@@ -69,5 +69,7 @@ jobs:
             echo "変更なし。コミットをスキップします。"
           else
             git commit -m "auto: update metadata.csv [skip ci]"
+            # ダッシュボードからの同時更新と競合しないよう rebase してから push
+            git pull --rebase origin main || true
             git push
           fi

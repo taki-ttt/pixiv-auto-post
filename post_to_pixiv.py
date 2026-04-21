@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import os
+import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -183,9 +184,10 @@ def ensure_posted_folder(svc, parent_id: str) -> str:
 
 def find_post_folder(svc, parent_id: str, post_id: str) -> str | None:
     """post_id と同名のサブフォルダ ID を返す"""
+    safe_name = post_id.replace("\\", "\\\\").replace("'", "\\'")
     q = (
         f"'{parent_id}' in parents"
-        f" and name='{post_id}'"
+        f" and name='{safe_name}'"
         " and mimeType='application/vnd.google-apps.folder'"
         " and trashed=false"
     )
@@ -350,13 +352,18 @@ def main() -> None:
     log.info("タグ:     %s", " / ".join(tags))
 
     # ⑤ Google Drive から画像をダウンロード
-    svc = get_drive_service()
+    try:
+        svc = get_drive_service()
+    except Exception as e:
+        log.error("Google Drive 認証エラー: %s", e)
+        sys.exit(1)
+
     root_folder_id = os.environ["PIXIV_DRIVE_FOLDER_ID"]
 
     post_folder_id = find_post_folder(svc, root_folder_id, drive_folder)
     if not post_folder_id:
-        log.error("Google Drive 上に %s フォルダが見つかりません", drive_folder)
-        return
+        log.error("Google Drive 上に '%s' フォルダが見つかりません", drive_folder)
+        sys.exit(1)
 
     posted_folder_id = ensure_posted_folder(svc, root_folder_id)
 
@@ -364,7 +371,7 @@ def main() -> None:
         img_paths = download_images(svc, post_folder_id, Path(tmpdir))
         if not img_paths:
             log.error("%s フォルダに画像がありません", post_id)
-            return
+            sys.exit(1)
         log.info("画像 %d 枚をダウンロードしました", len(img_paths))
 
         # ⑥ Pixiv に投稿
@@ -372,11 +379,15 @@ def main() -> None:
             log.info("[DRY RUN] %s: %d 枚を投稿予定", post_id, len(img_paths))
             pixiv_id = "dry_run"
         else:
-            api = auth_pixiv()
-            pixiv_id = upload_illust(
-                api, img_paths, title, caption, tags,
-                x_restr, ai_type, restrict,
-            )
+            try:
+                api = auth_pixiv()
+                pixiv_id = upload_illust(
+                    api, img_paths, title, caption, tags,
+                    x_restr, ai_type, restrict,
+                )
+            except Exception as e:
+                log.error("Pixiv 投稿エラー: %s", e)
+                sys.exit(1)
 
         # ⑦ metadata.csv を更新
         now_str = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
@@ -391,11 +402,18 @@ def main() -> None:
 
         # ⑧ Drive の投稿済みフォルダへ移動
         if not dry:
-            move_to_posted(svc, post_folder_id, posted_folder_id)
-            log.info("%s を posted/ フォルダに移動しました", post_id)
+            try:
+                move_to_posted(svc, post_folder_id, posted_folder_id)
+                log.info("%s を posted/ フォルダに移動しました", post_id)
+            except Exception as e:
+                log.warning("posted/ への移動に失敗 (投稿自体は成功): %s", e)
 
     log.info("✅ 完了: %s → pixiv_id=%s", post_id, pixiv_id)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log.error("予期しないエラー: %s", e, exc_info=True)
+        sys.exit(1)
