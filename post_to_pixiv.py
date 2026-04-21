@@ -142,9 +142,10 @@ def write_metadata(rows: list[dict]) -> None:
 
 
 def get_next_post(rows: list[dict]) -> dict | None:
-    """未投稿 (posted=no) の先頭エントリを返す"""
+    """未投稿 (posted が空 or "no") の先頭エントリを返す"""
     for row in rows:
-        if row.get("posted", "no").lower() == "no":
+        val = row.get("posted", "").strip().lower()
+        if val in ("", "no"):
             return row
     return None
 
