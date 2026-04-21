@@ -37,7 +37,9 @@ jobs:
 
       # ③ 依存ライブラリのインストール
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
 
       # ④ DRY_RUN フラグを config.json に反映 (手動実行時のみ)
       - name: Override dry_run if requested
@@ -54,13 +56,24 @@ jobs:
       # ⑤ メイン投稿スクリプトを実行
       - name: Run post_to_pixiv.py
         env:
-          PIXIV_REFRESH_TOKEN:   ${{ secrets.PIXIV_REFRESH_TOKEN }}
+          PIXIV_EMAIL:           ${{ secrets.PIXIV_EMAIL }}
+          PIXIV_PASSWORD:        ${{ secrets.PIXIV_PASSWORD }}
           GOOGLE_CREDENTIALS:    ${{ secrets.GOOGLE_CREDENTIALS }}
           PIXIV_DRIVE_FOLDER_ID: ${{ secrets.PIXIV_DRIVE_FOLDER_ID }}
         run: python post_to_pixiv.py
 
-      # ⑥ metadata.csv の変更をコミット・プッシュ
+      # ⑥ デバッグ用スクリーンショットを保存（失敗時のみ）
+      - name: Upload debug screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixiv-debug-screenshots
+          path: /tmp/pixiv_*.png
+          retention-days: 3
+
+      # ⑦ metadata.csv の変更をコミット・プッシュ
       - name: Commit metadata.csv
+        if: success()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

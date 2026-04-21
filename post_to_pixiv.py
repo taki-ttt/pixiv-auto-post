@@ -8,7 +8,6 @@ config.json のスケジュールと現在時刻を照合し、
 """
 
 import csv
-import io
 import json
 import logging
 import os
@@ -17,11 +16,11 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from pixivpy3 import AppPixivAPI
+
+from pixiv_uploader import upload_illust as playwright_upload
 
 # ──────────────────────────────────────────────
 #  定数・設定
@@ -32,7 +31,6 @@ CONFIG_PATH     = ROOT / "config.json"
 TEMPLATES_PATH  = ROOT / "templates.json"
 METADATA_PATH   = ROOT / "metadata.csv"
 
-PIXIV_API_BASE  = "https://app-api.pixiv.net"
 DRIVE_SCOPES    = ["https://www.googleapis.com/auth/drive"]
 
 logging.basicConfig(
@@ -231,16 +229,9 @@ def move_to_posted(svc, folder_id: str, posted_id: str) -> None:
 
 
 # ──────────────────────────────────────────────
-#  Pixiv 投稿
+#  Pixiv 投稿 (Playwright ブラウザ自動操作)
 # ──────────────────────────────────────────────
-def auth_pixiv() -> AppPixivAPI:
-    api = AppPixivAPI()
-    api.auth(refresh_token=os.environ["PIXIV_REFRESH_TOKEN"])
-    return api
-
-
-def upload_illust(
-    api: AppPixivAPI,
+def upload_to_pixiv(
     image_paths: list[str],
     title: str,
     caption: str,
@@ -249,60 +240,17 @@ def upload_illust(
     ai_type: int = 2,
     restrict: int = 0,
 ) -> str:
-    """
-    Pixiv アプリ API 経由でイラストをアップロードする。
-    Returns: 投稿イラスト ID (str)
-
-    ※ Pixiv の非公式 API を使用します。
-      エンドポイントが変更された場合は PIXIV_API_BASE と url を調整してください。
-      参考: https://github.com/upbit/pixivpy
-    """
-    url = f"{PIXIV_API_BASE}/v1/works/add"
-    headers = {
-        "Authorization": f"Bearer {api.access_token}",
-        "User-Agent":    "PixivAndroidApp/6.18.1 (Android 11; SM-G998B)",
-        "App-OS":        "android",
-        "App-OS-Version":"11",
-        "App-Version":   "6.18.1",
-    }
-
-    data: list[tuple] = [
-        ("title",         title),
-        ("work_type",     "illust" if len(image_paths) == 1 else "manga"),
-        ("caption",       caption),
-        ("restrict",      str(restrict)),
-        ("x_restrict",    str(x_restrict)),
-        ("ai_type",       str(ai_type)),
-        ("original",      "1"),
-        ("allow_comment", "1"),
-        ("allow_tag_edit","1"),
-    ]
-    for tag in tags:
-        data.append(("tags[]", tag))
-
-    opened: list[io.BufferedReader] = []
-    files:  list[tuple] = []
-    try:
-        for img_path in image_paths:
-            suffix = Path(img_path).suffix.lower().lstrip(".")
-            mime   = "image/jpeg" if suffix in ("jpg", "jpeg") else f"image/{suffix or 'png'}"
-            fh = open(img_path, "rb")
-            opened.append(fh)
-            files.append(("images[]", (Path(img_path).name, fh, mime)))
-
-        resp = requests.post(url, headers=headers, data=data, files=files, timeout=60)
-
-        if resp.ok:
-            illust_id = str(resp.json().get("illust", {}).get("id", "unknown"))
-            log.info("投稿成功 → https://www.pixiv.net/artworks/%s", illust_id)
-            return illust_id
-        else:
-            log.error("投稿失敗: %s %s", resp.status_code, resp.text[:300])
-            resp.raise_for_status()
-
-    finally:
-        for fh in opened:
-            fh.close()
+    """Playwright 経由で Pixiv にイラストをアップロードする。
+    Returns: 投稿イラスト ID (str)"""
+    return playwright_upload(
+        image_paths=image_paths,
+        title=title,
+        caption=caption,
+        tags=tags,
+        x_restrict=x_restrict,
+        ai_type=ai_type,
+        restrict=restrict,
+    )
 
 
 # ──────────────────────────────────────────────
@@ -374,15 +322,14 @@ def main() -> None:
             sys.exit(1)
         log.info("画像 %d 枚をダウンロードしました", len(img_paths))
 
-        # ⑥ Pixiv に投稿
+        # ⑥ Pixiv に投稿 (Playwright ブラウザ自動操作)
         if dry:
             log.info("[DRY RUN] %s: %d 枚を投稿予定", post_id, len(img_paths))
             pixiv_id = "dry_run"
         else:
             try:
-                api = auth_pixiv()
-                pixiv_id = upload_illust(
-                    api, img_paths, title, caption, tags,
+                pixiv_id = upload_to_pixiv(
+                    img_paths, title, caption, tags,
                     x_restr, ai_type, restrict,
                 )
             except Exception as e:
